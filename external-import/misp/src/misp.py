@@ -146,6 +146,7 @@ class Misp:
             if os.path.isfile(config_file_path)
             else {}
         )
+        # dang ki voi OpecCTI
         self.helper = OpenCTIConnectorHelper(config)
         # Extra config
         self.misp_url = get_config_variable("MISP_URL", ["misp", "url"], config)
@@ -193,17 +194,8 @@ class Misp:
         self.import_creator_orgs = get_config_variable(
             "MISP_IMPORT_CREATOR_ORGS", ["misp", "import_creator_orgs"], config
         )
-        self.import_creator_orgs_not = get_config_variable(
-            "MISP_IMPORT_CREATOR_ORGS_NOT", ["misp", "import_creator_orgs_not"], config
-        )
         self.import_owner_orgs = get_config_variable(
             "MISP_IMPORT_OWNER_ORGS", ["misp", "import_owner_orgs"], config
-        )
-        self.import_owner_orgs_not = get_config_variable(
-            "MISP_IMPORT_OWNER_ORGS_NOT", ["misp", "import_owner_orgs_not"], config
-        )
-        self.import_keyword = get_config_variable(
-            "MISP_IMPORT_KEYWORD", ["misp", "MISP_IMPORT_KEYWORD"], config
         )
         self.import_distribution_levels = get_config_variable(
             "MISP_IMPORT_DISTRIBUTION_LEVELS",
@@ -336,9 +328,7 @@ class Misp:
                 next_event_timestamp = latest_event_timestamp + 1
                 kwargs[self.misp_datetime_attribute] = next_event_timestamp
             elif import_from_date is not None:
-                kwargs[self.misp_datetime_attribute] = import_from_date.strftime(
-                    "%Y-%m-%d"
-                )
+                kwargs["date_from"] = import_from_date.strftime("%Y-%m-%d")
 
             # With attachments
             if self.import_with_attachments:
@@ -350,9 +340,6 @@ class Misp:
             while True:
                 kwargs["limit"] = 50
                 kwargs["page"] = current_page
-                if self.import_keyword is not None:
-                    kwargs["value"] = self.import_keyword
-                    kwargs["searchall"] = True
                 self.helper.log_info(
                     "Fetching MISP events with args: " + json.dumps(kwargs)
                 )
@@ -402,20 +389,14 @@ class Misp:
     def process_events(self, work_id, events) -> int:
         # Prepare filters
         import_creator_orgs = None
-        import_creator_orgs_not = None
         import_owner_orgs = None
-        import_owner_orgs_not = None
         import_distribution_levels = None
         import_threat_levels = None
         latest_event_timestamp = None
         if self.import_creator_orgs is not None:
             import_creator_orgs = self.import_creator_orgs.split(",")
-        if self.import_creator_orgs_not is not None:
-            import_creator_orgs_not = self.import_creator_orgs_not.split(",")
         if self.import_owner_orgs is not None:
             import_owner_orgs = self.import_owner_orgs.split(",")
-        if self.import_owner_orgs_not is not None:
-            import_owner_orgs_not = self.import_owner_orgs_not.split(",")
         if self.import_distribution_levels is not None:
             import_distribution_levels = self.import_distribution_levels.split(",")
         if self.import_threat_levels is not None:
@@ -434,6 +415,7 @@ class Misp:
             # Check against filter
             if (
                 import_creator_orgs is not None
+                and not import_creator_orgs
                 and event["Event"]["Orgc"]["name"] not in import_creator_orgs
             ):
                 self.helper.log_info(
@@ -443,33 +425,14 @@ class Misp:
                 )
                 continue
             if (
-                import_creator_orgs_not is not None
-                and event["Event"]["Orgc"]["name"] in import_creator_orgs_not
-            ):
-                self.helper.log_info(
-                    "Event creator organization "
-                    + event["Event"]["Orgc"]["name"]
-                    + " in import_creator_orgs_not, do not import"
-                )
-                continue
-            if (
                 import_owner_orgs is not None
+                and not import_owner_orgs
                 and event["Event"]["Org"]["name"] not in import_owner_orgs
             ):
                 self.helper.log_info(
                     "Event owner organization "
                     + event["Event"]["Org"]["name"]
                     + " not in import_owner_orgs, do not import"
-                )
-                continue
-            if (
-                import_owner_orgs_not is not None
-                and event["Event"]["Org"]["name"] not in import_owner_orgs_not
-            ):
-                self.helper.log_info(
-                    "Event owner organization "
-                    + event["Event"]["Org"]["name"]
-                    + " in import_owner_orgs_not, do not import"
                 )
                 continue
             if (
@@ -503,6 +466,7 @@ class Misp:
                 continue
 
             ### Default variables
+            # hầu như dùng để chứa các id, dùng để làm điều kiện if để gán giá trị cho bundle_object và object_refs
             added_markings = []
             added_entities = []
             added_object_refs = []
@@ -512,16 +476,21 @@ class Misp:
             added_relationships = []
 
             ### Pre-process
-            # Author
+            # Author: ten to chuc
+            #1.
             author = stix2.Identity(
                 name=event["Event"]["Orgc"]["name"],
                 identity_class="organization",
             )
+
             # Markings
+            # moi tag tuong ung voi 1 loai markings
             if "Tag" in event["Event"]:
                 event_markings = self.resolve_markings(event["Event"]["Tag"])
             else:
                 event_markings = [stix2.TLP_WHITE]
+
+            #2.
             # Elements
             event_elements = self.prepare_elements(
                 event["Event"]["Galaxy"],
@@ -529,11 +498,16 @@ class Misp:
                 author,
                 event_markings,
             )
+
             # Tags
             event_tags = []
             if "Tag" in event["Event"]:
                 event_tags = self.resolve_tags(event["Event"]["Tag"])
+
             # ExternalReference
+            # External references are used to describe pointers to information represented outside of STIX.
+            # For example, a Malware object could use an external reference to indicate an ID for that malware in an external database or a report could use references to represent source material.
+            #3.
             if self.misp_reference_url is not None and len(self.misp_reference_url) > 0:
                 url = self.misp_reference_url + "/events/view/" + event["Event"]["uuid"]
             else:
@@ -547,12 +521,14 @@ class Misp:
 
             ### Get indicators
             event_external_references = [event_external_reference]
-            indicators = []
+            indicators = [] # SDO
             # Get attributes of event
+            # them tung thuoc tinh cua indicator vao
+            #4.
             for attribute in event["Event"]["Attribute"]:
                 indicator = self.process_attribute(
                     author,
-                    event_elements,
+                    event_elements, # SDO của Event
                     event_markings,
                     event_tags,
                     None,
@@ -560,6 +536,8 @@ class Misp:
                     attribute,
                     event["Event"]["threat_level_id"],
                 )
+
+                # lay duong dan cua cai gi do
                 if attribute["type"] == "link":
                     event_external_references.append(
                         stix2.ExternalReference(
@@ -576,10 +554,12 @@ class Misp:
                     added_files.append(pdf_file)
 
             # Get attributes of objects
-            indicators_relationships = []
-            objects_relationships = []
-            objects_observables = []
+            indicators_relationships = [] #
+            objects_relationships = [] # SRO
+            objects_observables = [] # SCO
             event_threat_level = event["Event"]["threat_level_id"]
+
+            #5.
             for object in event["Event"]["Object"]:
                 attribute_external_references = []
                 for attribute in object["Attribute"]:
@@ -596,6 +576,7 @@ class Misp:
                     if pdf_file is not None:
                         added_files.append(pdf_file)
 
+                #6.
                 object_observable = None
                 if self.misp_create_object_observables is not None:
                     unique_key = ""
@@ -616,16 +597,17 @@ class Misp:
                                 event_threat_level
                             ),
                             "labels": event_tags,
-                            "created_by_ref": author["id"],
+                            "created_by_ref": author,
                             "external_references": attribute_external_references,
                         },
                     )
                     objects_observables.append(object_observable)
+                    #7
                 object_attributes = []
                 for attribute in object["Attribute"]:
                     indicator = self.process_attribute(
                         author,
-                        event_elements,
+                        event_elements,#SDO
                         event_markings,
                         event_tags,
                         object_observable,
@@ -633,6 +615,7 @@ class Misp:
                         attribute,
                         event["Event"]["threat_level_id"],
                     )
+                    # thêm indicator vừa tạo vào indicators và object_attribute
                     if indicator is not None:
                         indicators.append(indicator)
                         if (
@@ -645,8 +628,9 @@ class Misp:
                 # TODO Extend observable
 
             ### Prepare the bundle
+            #8.
             bundle_objects = [author]
-            object_refs = []
+            object_refs = [] # dùng để tạo report
             # Add event markings
             for event_marking in event_markings:
                 if event_marking["id"] not in added_markings:
@@ -733,6 +717,7 @@ class Misp:
                     added_observables.append(object_observable["id"])
 
             # Link all objects with each other, now so we can find the correct entity type prefix in bundle_objects
+            #9.
             for object in event["Event"]["Object"]:
                 for ref in object["ObjectReference"]:
                     ref_src = ref.get("source_uuid")
@@ -751,7 +736,7 @@ class Misp:
                                         target_result["entity"]["id"],
                                     ),
                                     relationship_type="related-to",
-                                    created_by_ref=author["id"],
+                                    created_by_ref=author,
                                     description="Original Relationship: "
                                     + ref["relationship_type"]
                                     + "  \nComment: "
@@ -762,6 +747,7 @@ class Misp:
                                 )
                             )
             # Add object_relationships
+            #10.
             for object_relationship in objects_relationships:
                 if (
                     object_relationship["source_ref"]
@@ -786,6 +772,7 @@ class Misp:
 
             # Create the report if needed
             # Report in STIX must have at least one object_refs
+            #11.
             if self.misp_create_report and len(object_refs) > 0:
                 report = stix2.Report(
                     id=Report.generate_id(
@@ -818,7 +805,7 @@ class Misp:
                         int(event["Event"]["timestamp"])
                     ).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     report_types=[self.misp_report_type],
-                    created_by_ref=author["id"],
+                    created_by_ref=author,
                     object_marking_refs=event_markings,
                     labels=event_tags,
                     object_refs=object_refs,
@@ -829,7 +816,9 @@ class Misp:
                     },
                     allow_custom=True,
                 )
+            #12.
                 bundle_objects.append(report)
+                #12.
                 for note in event["Event"]["EventReport"]:
                     note = stix2.Note(
                         id=Note.generate_id(),
@@ -840,7 +829,7 @@ class Misp:
                         modified=datetime.utcfromtimestamp(
                             int(note["timestamp"])
                         ).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        created_by_ref=author["id"],
+                        created_by_ref=author,
                         object_marking_refs=event_markings,
                         abstract=note["name"],
                         content=self.process_note(note["content"], bundle_objects),
@@ -848,12 +837,21 @@ class Misp:
                         allow_custom=True,
                     )
                     bundle_objects.append(note)
+            #14.
             bundle = stix2.Bundle(objects=bundle_objects, allow_custom=True).serialize()
             self.helper.log_info("Sending event STIX2 bundle")
-
-            self.helper.send_stix2_bundle(
-                bundle, work_id=work_id, update=self.update_existing_data
-            )
+            try:
+                self.helper.send_stix2_bundle(
+                    bundle, work_id=work_id, update=self.update_existing_data
+                )
+            except:
+                time.sleep(60)
+                try:
+                    self.helper.send_stix2_bundle(
+                        bundle, work_id=work_id, update=self.update_existing_data
+                    )
+                except:
+                    return latest_event_timestamp
         return latest_event_timestamp
 
     def _get_pdf_file(self, attribute):
@@ -898,23 +896,29 @@ class Misp:
         event_elements,
         event_markings,
         event_labels,
-        object_observable,
-        attribute_external_references,
+        object_observable, # none
+        attribute_external_references, # none
         attribute,
         event_threat_level,
     ):
+        # resolved_attribute = {"resolver": , "type": , "value": }
         resolved_attributes = self.resolve_type(attribute["type"], attribute["value"])
         if resolved_attributes is None:
             return None
 
-        file_name = None
+        ## lặp bằng trường Attribute[type] và Attribute[value]
+        # Attribute tao ra nhiều sdo, sco , sro
+        # 1.
         for resolved_attribute in resolved_attributes:
-            if resolved_attribute["resolver"] == "file-name":
-                file_name = resolved_attribute["value"]
 
-        for resolved_attribute in resolved_attributes:
             ### Pre-process
-            # Markings & Tags
+            # -------------------------------------------------------------------------------
+            # Markings & Tags:  nguyên liệu Tạo indicator
+            # Dựa vào trường Atribute[Tag] để xác định biến attribute_markings,attribute_tags.
+            # Đó là Marking Object và bóc tách trường Atrribute[Tag]
+            # Nếu ko có trường Atrribute[Tag] thì attribute_markings = event_markings
+            # Lưu ý: event_marking , event_tags khác với attribute_marking và attribute_tags
+            #1
             attribute_tags = event_labels
             if "Tag" in attribute:
                 attribute_markings = self.resolve_markings(
@@ -926,7 +930,11 @@ class Misp:
             else:
                 attribute_markings = event_markings
 
+            #-------------------------------------------------------------------------------
             # Elements
+            # tạo attribute_element , cái này khác với event_elements
+            # Dựa vào trường Attribute[Tag] và Attribute[Galaxy] cho vào biến tags và galaxies
+#2.
             tags = []
             galaxies = []
             if "Tag" in attribute:
@@ -941,9 +949,14 @@ class Misp:
             observable_resolver = resolved_attribute["resolver"]
             observable_type = resolved_attribute["type"]
             observable_value = resolved_attribute["value"]
+
             name = resolved_attribute["value"]
             pattern_type = "stix"
+
+            #--------------------------------------------------------------------------------------------
             # observable type is yara or sigma for instance
+            # xét các trường hợp của observable_resolver. Các trường hợp này nằm ở các hằng số PATTERNTYPES, OPENCTISTIX2
+            # Tính pattern và name:
             if observable_resolver in PATTERNTYPES:
                 pattern_type = observable_resolver
                 pattern = observable_value
@@ -977,29 +990,34 @@ class Misp:
                 )
                 pattern = genuine_pattern
 
+            #-----------------------------------------------------------------------------------------------------
+            # tính to_ids và score cho custom_properties của Indicator
             to_ids = attribute["to_ids"]
-
             score = self.threat_level_to_score(event_threat_level)
             if self.import_to_ids_no_score is not None and not to_ids:
                 score = self.import_to_ids_no_score
 
+
+            #-----------------------------------------------------------------------------------------------------
+            # Tạo indicator
+#3.
             indicator = None
             if self.misp_create_indicators:
                 try:
                     indicator = stix2.Indicator(
                         id=Indicator.generate_id(pattern),
-                        name=name,
+                        name=name,# attribute[comment]
                         description=attribute["comment"],
-                        confidence=self.helper.connect_confidence_level,
-                        pattern_type=pattern_type,
+                        confidence=self.helper.connect_confidence_level, # tu file config
+                        pattern_type=pattern_type, #ipverion
                         pattern=pattern,
                         valid_from=datetime.utcfromtimestamp(
                             int(attribute["timestamp"])
                         ).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         labels=attribute_tags,
-                        created_by_ref=author["id"],
+                        created_by_ref=author,
                         object_marking_refs=attribute_markings,
-                        external_references=attribute_external_references,
+                        external_references=attribute_external_references, # none
                         created=datetime.utcfromtimestamp(
                             int(attribute["timestamp"])
                         ).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1014,114 +1032,119 @@ class Misp:
                     )
                 except Exception as e:
                     self.helper.log_error(str(e))
+
+
+            #-------------------------------------------------------------------------------------------------
+            # Dựa vào giá trị của observable_type để tao observable tuong ứng thích hợp SCO
+#4.
             observable = None
+            # true,
             if self.misp_create_observables and observable_type is not None:
                 try:
                     custom_properties = {
                         "description": attribute["comment"],
                         "x_opencti_score": score,
                         "labels": attribute_tags,
-                        "created_by_ref": author["id"],
+                        "created_by_ref": author,
                         "external_references": attribute_external_references,
                     }
-                    observable = None
-                    if observable_type == "Autonomous-System":
+                    observable = None # tao ra tu event[atribute][type] & [value]
+                    if observable_type == "autonomous-system":
                         observable = AutonomousSystem(
                             number=observable_value.replace("AS", ""),
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Mac-Addr":
+                    elif observable_type == "mac-addr":
                         observable = MACAddress(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Hostname":
+                    elif observable_type == "hostname":
                         observable = Hostname(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Domain-Name":
+                    elif observable_type == "domain-name":
                         observable = DomainName(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "IPv4-Addr":
+                    elif observable_type == "ipv4-addr":
                         observable = IPv4Address(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "IPv6-Addr":
+                    elif observable_type == "ipv6-addr":
                         observable = IPv6Address(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Url":
+                    elif observable_type == "url":
                         observable = URL(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Email-Addr":
+                    elif observable_type == "email-address":
                         observable = EmailAddress(
                             value=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Email-Message":
+                    elif observable_type == "email-message":
                         observable = EmailMessage(
                             subject=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Mutex":
+                    elif observable_type == "mutex":
                         observable = Mutex(
                             name=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "File":
+                    elif observable_type == "file":
                         if OPENCTISTIX2[observable_resolver]["path"][0] == "name":
                             observable = File(
                                 name=observable_value,
                                 object_marking_refs=attribute_markings,
                                 custom_properties=custom_properties,
                             )
-                        elif OPENCTISTIX2[observable_resolver]["path"][0] == "hashes":
+                        elif OPENCTISTIX2[observable_resolver]["path"][1] == "hashes":
                             hashes = {}
                             hashes[
                                 OPENCTISTIX2[observable_resolver]["path"][1]
                             ] = observable_value
                             observable = File(
-                                name=file_name,
                                 hashes=hashes,
                                 object_marking_refs=attribute_markings,
                                 custom_properties=custom_properties,
                             )
-                    elif observable_type == "Directory":
+                    elif observable_type == "directory":
                         observable = Directory(
                             path=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Windows-Registry-Key":
+                    elif observable_type == "windows-registry-key":
                         observable = WindowsRegistryKey(
                             key=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "Windows-Registry-Value-Type":
+                    elif observable_type == "ewindows-registry-value-type":
                         observable = WindowsRegistryValueType(
                             data=observable_value,
                             object_marking_refs=attribute_markings,
                             custom_properties=custom_properties,
                         )
-                    elif observable_type == "X509-Certificate":
+                    elif observable_type == "x509-certificate":
                         if OPENCTISTIX2[observable_resolver]["path"][0] == "issuer":
                             observable = File(
                                 issuer=observable_value,
@@ -1137,7 +1160,7 @@ class Misp:
                                 object_marking_refs=attribute_markings,
                                 custom_properties=custom_properties,
                             )
-                    elif observable_type == "Text":
+                    elif observable_type == "text":
                         observable = Text(
                             data=observable_value,
                             object_marking_refs=attribute_markings,
@@ -1145,8 +1168,13 @@ class Misp:
                         )
                 except Exception as e:
                     self.helper.log_error(str(e))
-            sightings = []
+
+            #------------------------------------------------------------------------------------------------------
+            # Tạo SRO sighting
+            # sightings = { indicator["id"], sighted_by["id", datetime....
+            sightings = [] # SRO
             identities = []
+#5.
             if "Sighting" in attribute:
                 for misp_sighting in attribute["Sighting"]:
                     if "Organisation" in misp_sighting:
@@ -1161,6 +1189,8 @@ class Misp:
                     else:
                         sighted_by = None
 
+                    #-----------------------------------------------------------------------------------------------
+                    # Tạo SRO
                     if indicator is not None:
                         sighting = stix2.Sighting(
                             id=StixSightingRelationship.generate_id(
@@ -1202,6 +1232,7 @@ class Misp:
                     #     sightings.append(sighting)
 
             ### Create the relationships
+#6.
             relationships = []
             if indicator is not None and observable is not None:
                 relationships.append(
@@ -1210,13 +1241,15 @@ class Misp:
                             "based-on", indicator.id, observable.id
                         ),
                         relationship_type="based-on",
-                        created_by_ref=author["id"],
+                        created_by_ref=author,
                         source_ref=indicator.id,
                         target_ref=observable.id,
                         allow_custom=True,
                     )
                 )
             ### Create relationship between MISP attribute (indicator or observable) and MISP object (observable)
+            # đoạn này chỗ attribute ko chạy
+#7.
             if object_observable is not None and (
                 indicator is not None or observable is not None
             ):
@@ -1226,7 +1259,7 @@ class Misp:
                             "related-to", object_observable.id, observable.id
                         ),
                         relationship_type="related-to",
-                        created_by_ref=author["id"],
+                        created_by_ref=author,
                         source_ref=object_observable.id,
                         target_ref=observable.id
                         if (observable is not None)
@@ -1235,6 +1268,8 @@ class Misp:
                     )
                 )
             # Event threats
+            # Event có indicator hoặc observable nào thì gắn quan hệ SDO(element_event) của Event với cái đó
+#8.
             threat_names = {}
             for threat in (
                 event_elements["intrusion_sets"]
@@ -1249,15 +1284,16 @@ class Misp:
                                 "indicates", indicator.id, threat.id
                             ),
                             relationship_type="indicates",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=indicator.id,
-                            target_ref=threat.id,
+                            target_ref=threat.id, # id của SDO event
                             description=attribute["comment"],
                             object_marking_refs=attribute_markings,
                             confidence=self.helper.connect_confidence_level,
                             allow_custom=True,
                         )
                     )
+#9.
                 if observable is not None:
                     relationships.append(
                         stix2.Relationship(
@@ -1265,9 +1301,9 @@ class Misp:
                                 "related-to", observable.id, threat.id
                             ),
                             relationship_type="related-to",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=observable.id,
-                            target_ref=threat.id,
+                            target_ref=threat.id,# id của SDO event
                             description=attribute["comment"],
                             object_marking_refs=attribute_markings,
                             confidence=self.helper.connect_confidence_level,
@@ -1276,6 +1312,8 @@ class Misp:
                     )
 
             # Attribute threats
+            # gắn các SDO, SCO của Attribue vào indicator
+#10.
             for threat in (
                 attribute_elements["intrusion_sets"]
                 + attribute_elements["malwares"]
@@ -1292,15 +1330,16 @@ class Misp:
                                 "indicates", indicator.id, threat_id
                             ),
                             relationship_type="indicates",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=indicator.id,
-                            target_ref=threat_id,
+                            target_ref=threat_id,# id của SDO attribute
                             description=attribute["comment"],
                             object_marking_refs=attribute_markings,
                             confidence=self.helper.connect_confidence_level,
                             allow_custom=True,
                         )
                     )
+#11.
                 if observable is not None:
                     relationships.append(
                         stix2.Relationship(
@@ -1308,16 +1347,18 @@ class Misp:
                                 "related-to", observable.id, threat_id
                             ),
                             relationship_type="related-to",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=observable.id,
-                            target_ref=threat_id,
+                            target_ref=threat_id,# id của SDO attribute
                             description=attribute["comment"],
                             object_marking_refs=attribute_markings,
                             confidence=self.helper.connect_confidence_level,
                             allow_custom=True,
                         )
                     )
+#12.
             # Event Attack Patterns
+            # Nếu có SDO malware
             for attack_pattern in event_elements["attack_patterns"]:
                 if len(event_elements["malwares"]) > 0:
                     threats = event_elements["malwares"]
@@ -1330,14 +1371,15 @@ class Misp:
                         threat_id = threat_names[threat.name]
                     else:
                         threat_id = threat.id
+                        #
                     relationship_uses = stix2.Relationship(
                         id=StixCoreRelationship.generate_id(
                             "uses", threat_id, attack_pattern.id
                         ),
                         relationship_type="uses",
-                        created_by_ref=author["id"],
-                        source_ref=threat_id,
-                        target_ref=attack_pattern.id,
+                        created_by_ref=author,
+                        source_ref=threat_id, # SDO của Atribute
+                        target_ref=attack_pattern.id, # SDO của event
                         description=attribute["comment"],
                         object_marking_refs=attribute_markings,
                         confidence=self.helper.connect_confidence_level,
@@ -1350,7 +1392,7 @@ class Misp:
                     #             "relationship"
                     #         ),
                     #         relationship_type="indicates",
-                    #         created_by_ref=author["id"],
+                    #         created_by_ref=author,
                     #         source_ref=indicator.id,
                     #         target_ref=relationship_uses.id,
                     #         description=attribute["comment"],
@@ -1364,7 +1406,7 @@ class Misp:
                     #             "relationship"
                     #         ),
                     #         relationship_type="related-to",
-                    #         created_by_ref=author["id"],
+                    #         created_by_ref=author,
                     #         source_ref=observable.id,
                     #         target_ref=relationship_uses.id,
                     #         description=attribute["comment"],
@@ -1392,7 +1434,7 @@ class Misp:
                         ),
                         relationship_type="uses",
                         confidence=self.helper.connect_confidence_level,
-                        created_by_ref=author["id"],
+                        created_by_ref=author,
                         source_ref=threat_id,
                         target_ref=attack_pattern.id,
                         description=attribute["comment"],
@@ -1406,7 +1448,7 @@ class Misp:
                     #            "relationship"
                     #        ),
                     #        relationship_type="indicates",
-                    #        created_by_ref=author["id"],
+                    #        created_by_ref=author,
                     #        source_ref=indicator.id,
                     #        target_ref=relationship_uses.id,
                     #        description=attribute["comment"],
@@ -1420,7 +1462,7 @@ class Misp:
                     #            "relationship"
                     #        ),
                     #        relationship_type="indicates",
-                    #        created_by_ref=author["id"],
+                    #        created_by_ref=author,
                     #        source_ref=observable.id,
                     #        target_ref=relationship_uses.id,
                     #        description=attribute["comment"],
@@ -1428,6 +1470,7 @@ class Misp:
                     #        object_marking_refs=attribute_markings,
                     #    )
                     #    relationships.append(relationship_indicates)
+#13a
             for sector in attribute_elements["sectors"]:
                 if indicator is not None:
                     relationships.append(
@@ -1436,7 +1479,7 @@ class Misp:
                                 "related-to", indicator.id, sector.id
                             ),
                             relationship_type="related-to",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=indicator.id,
                             target_ref=sector.id,
                             description=attribute["comment"],
@@ -1445,6 +1488,7 @@ class Misp:
                             allow_custom=True,
                         )
                     )
+#14a.
                 if observable is not None:
                     relationships.append(
                         stix2.Relationship(
@@ -1452,7 +1496,7 @@ class Misp:
                                 "related-to", observable.id, sector.id
                             ),
                             relationship_type="related-to",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=observable.id,
                             target_ref=sector.id,
                             description=attribute["comment"],
@@ -1461,7 +1505,7 @@ class Misp:
                             allow_custom=True,
                         )
                     )
-
+#13b.
             for country in attribute_elements["countries"]:
                 if indicator is not None:
                     relationships.append(
@@ -1470,7 +1514,7 @@ class Misp:
                                 "related-to", indicator.id, country.id
                             ),
                             relationship_type="related-to",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=indicator.id,
                             target_ref=country.id,
                             description=attribute["comment"],
@@ -1479,6 +1523,7 @@ class Misp:
                             allow_custom=True,
                         )
                     )
+#14b.
                 if observable is not None:
                     relationships.append(
                         stix2.Relationship(
@@ -1486,7 +1531,7 @@ class Misp:
                                 "related-to", observable.id, country.id
                             ),
                             relationship_type="related-to",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             source_ref=observable.id,
                             target_ref=country.id,
                             description=attribute["comment"],
@@ -1495,6 +1540,7 @@ class Misp:
                             allow_custom=True,
                         )
                     )
+#15.
             return {
                 "indicator": indicator,
                 "observable": observable,
@@ -1505,6 +1551,7 @@ class Misp:
                 "sightings": sightings,
             }
 
+    ### Lấy SDO từ trường Galaxy và Tag của [Event, Attribute, Object]
     def prepare_elements(self, galaxies, tags, author, markings):
         elements = {
             "intrusion_sets": [],
@@ -1516,7 +1563,11 @@ class Misp:
         }
         added_names = []
         # TODO: process sector & countries from galaxies?
+
         for galaxy in galaxies:
+
+            ##1. Tùy từng trường hợp của trường Galaxy[name] và Galaxy[namespace] của [ Event, Atrribuet, Object] sẽ xác định là SDO nào
+            #------------------------------------------------------------------------------------------
             # Get the linked intrusion sets
             if (
                 (
@@ -1529,17 +1580,22 @@ class Misp:
                     and galaxy["name"] == "Microsoft Activity Group actor"
                 )
             ):
+                # Nếu trong trường Galaxy[GalaxyCluster] xem có -G hoặc APT hoặc các trường hợp khác
                 for galaxy_entity in galaxy["GalaxyCluster"]:
+                    # tạo name
                     if " - G" in galaxy_entity["value"]:
                         name = galaxy_entity["value"].split(" - G")[0]
                     elif "APT " in galaxy_entity["value"]:
                         name = galaxy_entity["value"].replace("APT ", "APT")
                     else:
                         name = galaxy_entity["value"]
+                    # tạo aliases
                     if "meta" in galaxy_entity and "synonyms" in galaxy_entity["meta"]:
                         aliases = galaxy_entity["meta"]["synonyms"]
                     else:
                         aliases = [name]
+
+                        # if: Kiểm tra xem SDO này đã được xét chưa
                     if name not in added_names:
                         elements["intrusion_sets"].append(
                             stix2.IntrusionSet(
@@ -1547,12 +1603,14 @@ class Misp:
                                 name=name,
                                 labels=["intrusion-set"],
                                 description=galaxy_entity["description"],
-                                created_by_ref=author["id"],
+                                created_by_ref=author,
                                 object_marking_refs=markings,
                                 custom_properties={"x_opencti_aliases": aliases},
                             )
                         )
                         added_names.append(name)
+
+            #-------------------------------------------------------------------------------------------
             # Get the linked tools
             if galaxy["namespace"] == "mitre-attack" and galaxy["name"] == "Tool":
                 for galaxy_entity in galaxy["GalaxyCluster"]:
@@ -1571,13 +1629,15 @@ class Misp:
                                 name=name,
                                 labels=["tool"],
                                 description=galaxy_entity["description"],
-                                created_by_ref=author["id"],
+                                created_by_ref=author,
                                 object_marking_refs=markings,
                                 custom_properties={"x_opencti_aliases": aliases},
                                 allow_custom=True,
                             )
                         )
                         added_names.append(name)
+
+            # -------------------------------------------------------------------------------------------
             # Get the linked malwares
             if (
                 (galaxy["namespace"] == "mitre-attack" and galaxy["name"] == "Malware")
@@ -1604,12 +1664,14 @@ class Misp:
                                 aliases=aliases,
                                 labels=[galaxy["name"]],
                                 description=galaxy_entity["description"],
-                                created_by_ref=author["id"],
+                                created_by_ref=author,
                                 object_marking_refs=markings,
                                 allow_custom=True,
                             )
                         )
                         added_names.append(name)
+
+            #-------------------------------------------------------------------------------------------
             # Get the linked attack_patterns
             if (
                 galaxy["namespace"] == "mitre-attack"
@@ -1634,7 +1696,7 @@ class Misp:
                                 id=AttackPattern.generate_id(name, x_mitre_id),
                                 name=name,
                                 description=galaxy_entity["description"],
-                                created_by_ref=author["id"],
+                                created_by_ref=author,
                                 object_marking_refs=markings,
                                 custom_properties={
                                     "x_mitre_id": x_mitre_id,
@@ -1644,6 +1706,8 @@ class Misp:
                             )
                         )
                         added_names.append(name)
+
+            #-------------------------------------------------------------------------------------------
             # Get the linked sectors
             if galaxy["namespace"] == "misp" and galaxy["name"] == "Sector":
                 for galaxy_entity in galaxy["GalaxyCluster"]:
@@ -1655,12 +1719,14 @@ class Misp:
                                 name=name,
                                 identity_class="class",
                                 description=galaxy_entity["description"],
-                                created_by_ref=author["id"],
+                                created_by_ref=author,
                                 object_marking_refs=markings,
                                 allow_custom=True,
                             )
                         )
                         added_names.append(name)
+
+            #-------------------------------------------------------------------------------------------
             # Get the linked countries
             if galaxy["namespace"] == "misp" and galaxy["name"] == "Country":
                 for galaxy_entity in galaxy["GalaxyCluster"]:
@@ -1672,13 +1738,16 @@ class Misp:
                                 name=name,
                                 country=galaxy_entity["meta"]["ISO"],
                                 description="Imported from MISP tag",
-                                created_by_ref=author["id"],
+                                created_by_ref=author,
                                 object_marking_refs=markings,
                                 allow_custom=True,
                             )
                         )
                         added_names.append(name)
+
+        ##2.  Dựa vào trường Tag[name] của [ Event, Attribute, Object] để xác định là SDO nào. Tương tự như trên
         for tag in tags:
+            #-------------------------------------------------------------------------------------------
             # Get the linked intrusion sets
             if (
                 tag["name"].startswith("misp-galaxy:threat-actor")
@@ -1709,12 +1778,13 @@ class Misp:
                             id=IntrusionSet.generate_id(name),
                             name=name,
                             description="Imported from MISP tag",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             object_marking_refs=markings,
                             allow_custom=True,
                         )
                     )
                     added_names.append(name)
+            #-------------------------------------------------------------------------------------------
             # Get the linked tools
             if tag["name"].startswith("misp-galaxy:mitre-tool") or tag[
                 "name"
@@ -1731,12 +1801,13 @@ class Misp:
                             id=Tool.generate_id(name),
                             name=name,
                             description="Imported from MISP tag",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             object_marking_refs=markings,
                             allow_custom=True,
                         )
                     )
                     added_names.append(name)
+            #-------------------------------------------------------------------------------------------
             # Get the linked malwares
             if (
                 tag["name"].startswith("misp-galaxy:mitre-malware")
@@ -1759,12 +1830,13 @@ class Misp:
                             name=name,
                             is_family=True,
                             description="Imported from MISP tag",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             object_marking_refs=markings,
                             allow_custom=True,
                         )
                     )
                     added_names.append(name)
+            #-------------------------------------------------------------------------------------------
             # Get the linked attack_patterns
             if tag["name"].startswith("mitre-attack:attack-pattern"):
                 tag_value_split = tag["name"].split('="')
@@ -1779,12 +1851,13 @@ class Misp:
                             id=AttackPattern.generate_id(name),
                             name=name,
                             description="Imported from MISP tag",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             object_marking_refs=markings,
                             allow_custom=True,
                         )
                     )
                     added_names.append(name)
+            #-------------------------------------------------------------------------------------------
             # Get the linked sectors
             if tag["name"].startswith("misp-galaxy:sector"):
                 tag_value_split = tag["name"].split('="')
@@ -1796,7 +1869,7 @@ class Misp:
                             name=name,
                             description="Imported from MISP tag",
                             identity_class="class",
-                            created_by_ref=author["id"],
+                            created_by_ref=author,
                             object_marking_refs=markings,
                             allow_custom=True,
                         )
